@@ -32,6 +32,7 @@ QVMRUN_OPTS=
 CLEAN=
 TEMPLATE=
 TEMPLATE_BACKUP=
+UPDATEVM_BACKUP=
 # Filter out some yum options and collect packages list
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -80,16 +81,26 @@ if [ "$YUM_ACTION" == "reinstall" ] || [ "$YUM_ACTION" == "upgrade" ] || [ "$YUM
         fi
 
         # Try to avoid unrecoverable failures when operating on the template of
-        # the UpdateVM by making a backup first.
+        # the UpdateVM by making backups first. Then use backup updatevm.
         UPDATEVM_TEMPLATE=$(qvm-prefs -- "$UPDATEVM" template 2>/dev/null)
         if [ X"$UPDATEVM_TEMPLATE" = X"$TEMPLATE" ]; then
+            qvm-shutdown $UPDATEVM
             TEMPLATE_BACKUP="${TEMPLATE}-backup-$(date +%Y%m%d)-$(mktemp -u XXXX)"
             TEMPLATE_BACKUP=${TEMPLATE_BACKUP:0:32}
-            echo "Attempting to operate on template of UpdateVM... backing up $TEMPLATE to $TEMPLATE_BACKUP"
-            if ! qvm-clone -- "$TEMPLATE" "$TEMPLATE_BACKUP"; then
-                echo "ERROR: Unable to make backup of UpdateVM template!" >&2
+            UPDATEVM_BACKUP="${UPDATEVM}-backup-$(date +%Y%m%d)-$(mktemp -u XXXX)"
+            UPDATEVM_BACKUP=${UPDATEVM_BACKUP:0:32}
+            echo "Attempting to operate on backup UpdateVM and template..."
+            echo " backing up $TEMPLATE to $TEMPLATE_BACKUP"
+            echo " backing up $UPDATEVM to $UPDATEVM_BACKUP"
+            if ! qvm-clone -- "$TEMPLATE" "$TEMPLATE_BACKUP"
+            || ! qvm-clone -- "$UPDATEVM" "$UPDATEVM_BACKUP" ; then
+                echo "ERROR: Unable to make backup of UpdateVM and template!" >&2
                 exit 1
             fi
+            #qvm-prefs --force-root "$UPDATEVM" template "$TEMPLATE_BACKUP"
+            qvm-prefs --force-root "$UPDATEVM_BACKUP" template "$TEMPLATE_BACKUP"
+            eche "Using $UPDATEVM_BACKUP"
+            UPDATEVM="$UPDATEVM_BACKUP"
         fi
     else
         echo "ERROR: Specify only one package to reinstall template"
@@ -204,8 +215,13 @@ if [ -n "$PKGS" ]; then
         # Remove backup, if we made one. Better to do this only on success and
         # potentially leave extra backups around than do it on an exit trap and
         # clean up more reliably but potentially brick a system.
-        qvm-remove -- "$TEMPLATE_BACKUP"
+        qvm-shutdown --wait "$UPDATEVM_BACKUP"
+        qvm-remove "$UPDATEVM_BACKUP" "$TEMPLATE_BACKUP"
+    else
+        echo "Template update failed. UpdateVM set to use backup template."
+        qubes-prefs --set --force-root updatevm "$UPDATEVM_BACKUP"
     fi
+
 
     if [ -n "$TEMPLATE" -a -n "$TEMPLATE_NETVM" -a x"$TEMPLATE_NETVM" != xNone ]; then
         if ! qvm-prefs --force-root -s $TEMPLATE netvm $TEMPLATE_NETVM; then
